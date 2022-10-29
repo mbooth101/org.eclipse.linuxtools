@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2012, 2018 Red Hat Inc. and others.
+ * Copyright (c) 2012, 2022 Red Hat Inc. and others.
  * 
  * This program and the accompanying materials are made
  * available under the terms of the Eclipse Public License 2.0
@@ -12,10 +12,11 @@
  *******************************************************************************/
 package org.eclipse.linuxtools.internal.cdt.libhover.devhelp;
 
-import java.io.File;
 import java.io.IOException;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 
 import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
@@ -26,12 +27,11 @@ import javax.xml.xpath.XPathExpressionException;
 import javax.xml.xpath.XPathFactory;
 
 import org.eclipse.core.expressions.IEvaluationContext;
-import org.eclipse.core.runtime.IPath;
-import org.eclipse.core.runtime.Path;
+import org.eclipse.core.runtime.Platform;
 import org.eclipse.help.ITopic;
 import org.eclipse.help.IUAElement;
-import org.eclipse.jface.preference.IPreferenceStore;
-import org.eclipse.linuxtools.internal.cdt.libhover.devhelp.preferences.PreferenceConstants;
+import org.osgi.framework.Bundle;
+import org.osgi.framework.FrameworkUtil;
 import org.w3c.dom.Document;
 import org.w3c.dom.Node;
 import org.w3c.dom.NodeList;
@@ -39,67 +39,61 @@ import org.xml.sax.SAXException;
 
 public class DevHelpTopic implements ITopic {
 
-    private String name;
-    private XPath xpath;
+    private static XPath xpath = XPathFactory.newInstance().newXPath();
+    private static DocumentBuilder docbuilder;
+    static {
+        DocumentBuilderFactory docfactory = DocumentBuilderFactory.newInstance();
+        docfactory.setValidating(false);
+        try {
+            docfactory.setFeature("http://xml.org/sax/features/namespaces", //$NON-NLS-1$
+                    false);
+            docfactory.setFeature("http://xml.org/sax/features/validation", //$NON-NLS-1$
+                    false);
+            docfactory.setFeature("http://apache.org/xml/features/nonvalidating/load-dtd-grammar", //$NON-NLS-1$
+                    false);
+            docfactory.setFeature("http://apache.org/xml/features/nonvalidating/load-external-dtd", //$NON-NLS-1$
+                    false);
+            docbuilder = docfactory.newDocumentBuilder();
+        } catch (ParserConfigurationException e) {
+            Bundle bundle = FrameworkUtil.getBundle(DevHelpTopic.class);
+            Platform.getLog(bundle).error("Unable to configure XML parser for Devhelp", e);
+        }
+    }
+
+    private Path path;
+    private String bookName;
     private String label;
     private String link;
-    private List<ITopic> subTopics;
+    private final List<ITopic> subTopics = new ArrayList<>();
 
-    DevHelpTopic(String name) {
-        this.name = name;
-        xpath = XPathFactory.newInstance().newXPath();
-        subTopics = new ArrayList<>();
-        label = name;
+    public DevHelpTopic(Path path) {
+        this.path = path;
+        // Use the directory name as a short identifier for the book
+        bookName = path.getParent().getFileName().toString();
         init();
     }
 
     private void init() {
-        IPreferenceStore ps = DevHelpPlugin.getDefault().getPreferenceStore();
-        IPath devhelpLocation = new Path(
-                ps.getString(PreferenceConstants.DEVHELP_DIRECTORY)).append(
-                name).append(name + ".devhelp2"); //$NON-NLS-1$
-        File devhelpFile = devhelpLocation.toFile();
-        if (devhelpFile.exists()) {
-            DocumentBuilderFactory docfactory = DocumentBuilderFactory
-                    .newInstance();
-            docfactory.setValidating(false);
-            try {
-                docfactory.setFeature("http://xml.org/sax/features/namespaces", //$NON-NLS-1$
-                        false);
-                docfactory.setFeature("http://xml.org/sax/features/validation", //$NON-NLS-1$
-                        false);
-                docfactory
-                        .setFeature(
-                                "http://apache.org/xml/features/nonvalidating/load-dtd-grammar", //$NON-NLS-1$
-                                false);
-                docfactory
-                        .setFeature(
-                                "http://apache.org/xml/features/nonvalidating/load-external-dtd", //$NON-NLS-1$
-                                false);
+        try {
+            Document docroot = docbuilder.parse(path.toFile());
 
-                DocumentBuilder docbuilder = docfactory.newDocumentBuilder();
-                Document docroot = docbuilder.parse(devhelpLocation.toFile());
-
-                // set label
-                label = xpathEval("/book/@title", docroot); //$NON-NLS-1$
-                if (label.isEmpty()) {
-                    label = name;
-                }
-                link = xpathEval("/book/@link", docroot); //$NON-NLS-1$
-
-                // set subtopics
-                NodeList nodes = xpathEvalNodes("/book/chapters/sub", docroot); //$NON-NLS-1$
-                for (int i = 0; i < nodes.getLength(); i++) {
-                    Node node = nodes.item(i);
-                    subTopics.add(new SimpleTopic(name, node));
-                }
-            } catch (ParserConfigurationException e) {
-                e.printStackTrace();
-            } catch (SAXException e) {
-                e.printStackTrace();
-            } catch (IOException e) {
-                e.printStackTrace();
+            // set label and index link
+            String title = xpathEval("/book/@title", docroot); //$NON-NLS-1$
+            if (title != null && !title.isBlank()) {
+                label = title;
             }
+            link = xpathEval("/book/@link", docroot); //$NON-NLS-1$
+
+            // set subtopics
+            NodeList nodes = xpathEvalNodes("/book/chapters/sub", docroot); //$NON-NLS-1$
+            for (int i = 0; i < nodes.getLength(); i++) {
+                Node node = nodes.item(i);
+                subTopics.add(new SimpleTopic(bookName, node));
+            }
+        } catch (SAXException e) {
+            e.printStackTrace();
+        } catch (IOException e) {
+            e.printStackTrace();
         }
     }
 
@@ -136,13 +130,12 @@ public class DevHelpTopic implements ITopic {
 
     @Override
     public String getHref() {
-        return "/" + DevHelpPlugin.PLUGIN_ID + "/" + name + "/"+link; //$NON-NLS-1$  //$NON-NLS-2$ //$NON-NLS-3$
-
+        return "/" + DevHelpPlugin.PLUGIN_ID + "/" + bookName + "/" + link; //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
     }
 
     @Override
     public String getLabel() {
-        return label;
+        return Objects.requireNonNullElse(label, bookName);
     }
 
     @Override
